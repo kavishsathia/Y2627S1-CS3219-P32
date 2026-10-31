@@ -1253,6 +1253,29 @@ for context, frontend-service is being set up. The frontend’s supplier screen 
   with a real OpenAI key. Not added to `deploy.sh` or `cloudbuild.yaml`.
 - Author review: Pending.
 
+## 2026-11-01: Fixes to the ranking explanations, embeddings and For You refresh
+
+- Tool: Claude Code (Opus 5.5). Mode: Debugging and implementation.
+- Exact prompt: `sector 1, backlog, fix the problems with pr 26 and you can push directly to the pr`
+  (following a review of PR 26).
+- Key response: The time reason says "orders like this" only when both orders have
+  embeddings that reach the semantic threshold. Orders are embedded again when their
+  supplier arrives after them or changes name or type, or when an order moves to another
+  supplier; a new `embedding_input_version` column (migration 0001) stops an embedding of
+  the old text that was in flight from being stored. Past deliveries are only orders in
+  `DELIVERED`, `COMPLETE` or `SETTLED`, not every accepted order. The order board refreshes
+  the For You list, not the hidden ordinary list, after a failed action and on
+  notifications. Test teardown waits for database connections to close.
+- Affected files: `order-ranking-service/` (score, consumers, embedding job, queries, app,
+  schema, migration 0001, tests, README), `frontend-service/` (order board, ranked list,
+  rankings key), and this log.
+- Verification: `npm test` in order-ranking-service, 23/23, against PostgreSQL 16 with
+  pgvector 0.6.0 and the stand-in OpenAI server; new tests failed before each fix. The
+  frontend passes `nuxt typecheck`. The For You refresh was checked in headless Chromium
+  against the Nuxt dev server with stand-in services, before and after the fix. Not run in
+  Docker Compose or with a real OpenAI key.
+- Author review: Pending.
+
 # AI usage log (Deployment)
 
 ## 2026-10-18: Deploying the order, notification, credit and saga services
