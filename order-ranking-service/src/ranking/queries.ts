@@ -2,14 +2,20 @@
  * AI Assistance Disclosure: Claude Code (Opus 5.5), 2026-10-31.
  * Scope: Loading open orders, the courier's past orders and preferences for ranking,
  * and reading and saving preferences. Author review: Pending.
+ * Claude Code (Opus 5.5), 2026-11-01. Scope: History is only orders the courier has
+ * delivered. Author review: Pending.
  */
-import { and, desc, eq, isNotNull, ne, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, ne, sql } from "drizzle-orm";
 import { config } from "../config.js";
 import { db } from "../db/index.js";
 import { orders, preferences, suppliers } from "../db/schema.js";
 import { HttpError } from "../errors.js";
 import { requestEmbedding } from "./embedding-job.js";
 import { rankOrders, type Place, type Preferences } from "./score.js";
+
+// order-service moves an order PICKED_UP -> DELIVERED -> COMPLETE -> SETTLED; from
+// DELIVERED on, the courier has delivered it.
+export const DELIVERED_STATES = ["DELIVERED", "COMPLETE", "SETTLED"];
 
 function place(latitude: number | null, longitude: number | null): Place | null {
   return latitude === null || longitude === null ? null : { latitude, longitude };
@@ -119,7 +125,8 @@ export async function rankOpenOrders(userId: number, location: Place | null, lim
       .from(orders)
       .leftJoin(suppliers, eq(orders.supplierId, suppliers.id))
       .where(and(eq(orders.state, "OPEN"), ne(orders.requesterId, userId))),
-    // Orders the courier accepted, whatever happened after, most recent first.
+    // Orders the courier has delivered, most recent first. Accepted orders that are not
+    // delivered yet are left out, since reasons call these "orders you've delivered".
     db.select({
       id: orders.id,
       title: orders.title,
@@ -131,7 +138,7 @@ export async function rankOpenOrders(userId: number, location: Place | null, lim
     })
       .from(orders)
       .leftJoin(suppliers, eq(orders.supplierId, suppliers.id))
-      .where(and(eq(orders.courierId, userId), isNotNull(orders.acceptedAt)))
+      .where(and(eq(orders.courierId, userId), inArray(orders.state, DELIVERED_STATES), isNotNull(orders.acceptedAt)))
       .orderBy(desc(orders.acceptedAt))
       .limit(config.ranking.historySize),
     getPreferences(userId),

@@ -393,6 +393,29 @@ test("a courier's past deliveries and location rank similar nearby orders first,
   for (const part of ["semantic", "distance", "time", "preference", "reward"]) assert.ok(part in first.parts, part);
 });
 
+test("only orders the courier has delivered count as past deliveries", async () => {
+  const at = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
+  // Taken but not yet delivered.
+  const taken = ["ACCEPTED", "PICKED_UP", "ACCEPTED"].map((state, i) =>
+    order({ title: `Bubble tea ${i + 1}`, courierId: COURIER, state, acceptedAt: at(i + 1) }));
+  for (const item of taken) await orderEvent(item, 3);
+  const open = order({ title: "Bubble tea again" });
+  await orderEvent(open, 2);
+  await job.requestEmbedding();
+
+  let body = await (await request("/rankings", { user: COURIER })).json();
+  assert.equal(body.context.pastOrders, 0);
+  assert.deepEqual(body.items[0].reasons, []);
+
+  // Delivered, then confirmed and settled: each is a past delivery.
+  const states = ["DELIVERED", "COMPLETE", "SETTLED"];
+  for (const [i, item] of taken.entries()) await orderEvent({ ...item, state: states[i] }, 4, "order.delivered");
+  body = await (await request("/rankings", { user: COURIER })).json();
+  assert.equal(body.context.pastOrders, 3);
+  const reasons = body.items[0].reasons.map((reason) => reason.text);
+  assert.ok(reasons.some((text) => text.startsWith("Like 3 orders you've delivered")), reasons.join(" | "));
+});
+
 test("rankings check the location and limit", async () => {
   assert.equal((await request("/rankings?lat=1.29", { user: COURIER })).status, 400);
   assert.equal((await request("/rankings?lat=100&lng=103", { user: COURIER })).status, 400);

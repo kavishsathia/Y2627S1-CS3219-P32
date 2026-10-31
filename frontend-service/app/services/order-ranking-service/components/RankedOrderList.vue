@@ -1,7 +1,8 @@
 <!-- AI Assistance Disclosure: Claude Code (Opus 5.5), 2026-10-31.
 Scope: The "For You" tab: open orders ranked by order-ranking-service, each with the
 reasons it was suggested, an optional browser location for distance, and the
-preferences dialog. Author review: Pending. -->
+preferences dialog. Author review: Pending.
+Claude Code (Opus 5.5), 2026-11-01. Scope: Summary counts delivered orders. Author review: Pending. -->
 <script setup lang="ts">
 import type { OrderAction } from "#shared/services/order-service/types";
 import type { RankedOrderList } from "#shared/services/order-ranking-service/types";
@@ -69,7 +70,7 @@ const summary = computed(() => {
   if (!context) return "";
   if (!context.personalised) return "Deliver a few orders, share your location or set your preferences, and this list will learn what suits you.";
   const parts = [];
-  if (context.pastOrders > 0) parts.push(`${context.pastOrders} order${context.pastOrders === 1 ? "" : "s"} you've taken`);
+  if (context.pastOrders > 0) parts.push(`${context.pastOrders} order${context.pastOrders === 1 ? "" : "s"} you've delivered`);
   if (context.location === "current") parts.push("your location");
   else if (context.location === "usual") parts.push("where you usually pick up");
   return parts.length ? `Ranked using ${parts.join(", ")} and your preferences.` : "Ranked using your preferences.";

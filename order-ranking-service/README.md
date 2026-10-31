@@ -1,5 +1,6 @@
 <!-- AI Assistance Disclosure: Claude Code (Opus 5.5), 2026-10-31.
-Scope: Order-ranking-service design, setup, endpoint and event documentation. Author review: Pending. -->
+Scope: Order-ranking-service design, setup, endpoint and event documentation. Author review: Pending.
+Claude Code (Opus 5.5), 2026-11-01. Scope: Delivered history, supplier re-embedding and the time reason. Author review: Pending. -->
 # Order Ranking Service
 
 Smart request-to-courier matching (nice-to-have). Ranks open orders for each courier
@@ -20,16 +21,20 @@ npm run dev
 2. **Embedding.** Each order's title, description and pickup place are embedded as 1536
    numbers (OpenAI `text-embedding-3-small`). This runs in the background, never inside
    the event handler, so an OpenAI outage cannot hold up order events. Failures back off
-   1, 2, 4… minutes, up to `EMBEDDING_MAX_ATTEMPTS`. An edit that changes the text is
-   embedded again. A courier's free-text preference note is embedded the same way.
+   1, 2, 4… minutes, up to `EMBEDDING_MAX_ATTEMPTS`. The order is embedded again when
+   its title, description or supplier changes, and when its supplier arrives later or
+   changes name or type; an embedding of the old text still in flight is not stored. A
+   courier's free-text preference note is embedded the same way.
 3. **Ranking.** `GET /rankings` compares each open order (not the caller's own) with the
-   caller in separate parts, each a similarity from 0 to 1:
+   caller's past deliveries (their orders in `DELIVERED`, `COMPLETE` or `SETTLED`;
+   accepted orders not yet delivered are left out) and preferences, in separate parts,
+   each a similarity from 0 to 1:
 
 | Part | Similarity | Reason shown when it reaches the threshold |
 | --- | --- | --- |
-| `semantic` | Highest cosine similarity to an order the courier took before, or to their note | `Like 3 orders you've delivered, such as "Gong Cha run"` |
+| `semantic` | Highest cosine similarity to an order the courier delivered, or to their note | `Like 3 orders you've delivered, such as "Gong Cha run"` |
 | `distance` | `exp(-metres / 800)` from the courier's location (or, without it, the centre of their past pickups) | `Gong Cha (COM2) is 350 m from you` |
-| `time` | How well now fits the hours the courier took orders, with past orders similar to this one counting more. Time of day is a point on a circle (sin, cos), so 11pm is close to 1am | `You often take orders like this around 1pm` |
+| `time` | How well now fits the hours the courier took the orders they delivered, with past orders similar to this one counting more. Time of day is a point on a circle (sin, cos), so 11pm is close to 1am | `You often take orders like this around 1pm` when a past order at this hour has a similar embedding; otherwise `You often take orders around 1pm` |
 | `preference` | Share of the courier's set preferences (types, buildings, minimum reward) the order meets; otherwise the share of their past orders from the same supplier type | `Food/Coffee is one of your preferred types` |
 | `reward` | Position among open orders by reward | `Pays more than most open orders (8 credits)` |
 
