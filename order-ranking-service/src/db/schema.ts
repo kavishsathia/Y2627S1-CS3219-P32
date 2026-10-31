@@ -4,6 +4,7 @@
  * (with the text embedding of each order), the latest version of each supplier from
  * supplier-events (for pickup coordinates), and each courier's ranking preferences.
  * Author review: Pending.
+ * Claude Code (Opus 5.5), 2026-11-01. Scope: embedding_input_version. Author review: Pending.
  */
 import { sql } from "drizzle-orm";
 import {
@@ -54,9 +55,12 @@ export const orders = pgTable(
     acceptedAt: timestamp("accepted_at", { withTimezone: true }),
     expiresAt: timestamp("expires_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
-    // Embedding of title + description. Null until the background job has embedded the
-    // current text; an edit that changes the text clears it again.
+    // Embedding of title + description and the supplier's name and type. Null until the
+    // background job has embedded the current text; a change to any of them clears it again.
     embedding: vector("embedding", { dimensions: EMBEDDING_DIMENSIONS }),
+    // Raised whenever the embedded text changes, so an embedding of older text that was
+    // still in flight is not stored.
+    embeddingInputVersion: integer("embedding_input_version").notNull().default(0),
     embeddingAttempts: integer("embedding_attempts").notNull().default(0),
     embeddingError: text("embedding_error"),
     // After a failure, not retried before this time (backing off 1, 2, 4… minutes).

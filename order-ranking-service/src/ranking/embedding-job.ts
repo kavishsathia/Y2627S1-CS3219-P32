@@ -5,6 +5,8 @@
  * never holds up order events. Failures are retried with back-off, up to
  * EMBEDDING_MAX_ATTEMPTS times.
  * Author review: Pending.
+ * Claude Code (Opus 5.5), 2026-11-01. Scope: An order embedding is stored only if the
+ * order's text and supplier have not changed since it was read. Author review: Pending.
  */
 import { and, asc, eq, isNotNull, isNull, lt, or, sql, type AnyColumn } from "drizzle-orm";
 import { config } from "../config.js";
@@ -27,6 +29,7 @@ async function embedOrders(): Promise<number> {
       id: orders.id,
       title: orders.title,
       description: orders.description,
+      inputVersion: orders.embeddingInputVersion,
       supplierName: suppliers.name,
       supplierType: suppliers.type,
     })
@@ -53,10 +56,11 @@ async function embedOrders(): Promise<number> {
 
   let stored = 0;
   for (const [index, order] of pending.entries()) {
-    // Skipped if the order was edited while it was being embedded; the next run embeds the new text.
+    // Skipped if the order was edited, or its supplier changed, while it was being embedded;
+    // the next run embeds the new text.
     const updated = await db.update(orders)
       .set({ embedding: vectors[index]!, embeddingError: null })
-      .where(and(eq(orders.id, order.id), eq(orders.title, order.title), eq(orders.description, order.description)))
+      .where(and(eq(orders.id, order.id), eq(orders.embeddingInputVersion, order.inputVersion)))
       .returning({ id: orders.id });
     stored += updated.length;
   }

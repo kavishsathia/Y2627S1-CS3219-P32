@@ -3,6 +3,7 @@
  * Scope: Express routes for ranked open orders and courier preferences, internal
  * Pub/Sub push routes for order-events and supplier-events, and the embedding job
  * route; error handling as in order-service. Author review: Pending.
+ * Claude Code (Opus 5.5), 2026-11-01. Scope: Supplier changes start embedding. Author review: Pending.
  */
 import express, { type ErrorRequestHandler, type Request, type Response } from "express";
 import { getUserId, requireInternal, requireUser } from "./auth.js";
@@ -66,7 +67,9 @@ internal.post("/pubsub/order-events", pushHandler("order-events", async (message
   // Embedding runs after the acknowledgement, so it never delays or fails the event.
   if (await applyOrderEvent(message)) void requestEmbedding();
 }));
-internal.post("/pubsub/supplier-events", pushHandler("supplier-events", applySupplierEvent));
+internal.post("/pubsub/supplier-events", pushHandler("supplier-events", async (message) => {
+  if (await applySupplierEvent(message)) void requestEmbedding();
+}));
 
 // Called every minute by Cloud Scheduler (locally by the ticker) to retry failed embeddings.
 internal.post("/embeddings/process", async (_req, res) => {

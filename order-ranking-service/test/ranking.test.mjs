@@ -3,6 +3,8 @@
  * Scope: HTTP and PostgreSQL (pgvector) integration tests: order and supplier event
  * copies, background embedding (through a stand-in OpenAI server, including failures
  * and edits), ranked results with reasons, and preferences. Author review: Pending.
+ * Claude Code (Opus 5.5), 2026-11-01. Scope: Supplier arrival, renames and in-flight
+ * embeddings; teardown waits for connections to close. Author review: Pending.
  */
 import assert from "node:assert/strict";
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
@@ -29,6 +31,9 @@ let db, pool, server, baseUrl, job, openai;
 const openaiCalls = [];
 let openaiFails = false;
 let hashingEmbedding;
+// While set, the stand-in holds its responses until this promise resolves, so a test
+// can change data while an embedding request is in flight.
+let openaiHold;
 
 function token(userId) {
   const now = Math.floor(Date.now() / 1000);
@@ -121,6 +126,17 @@ function order(overrides = {}) {
   };
 }
 
+// The stored vector is the embedding of exactly this text (pgvector stores 32-bit floats).
+async function embeddedText(id, text) {
+  const { rows } = await pool.query("select embedding <=> $2::vector as distance from orders where id = $1", [id, JSON.stringify(hashingEmbedding(text))]);
+  return rows[0].distance !== null && rows[0].distance < 1e-6;
+}
+
+async function until(condition) {
+  for (let i = 0; i < 200 && !condition(); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(condition(), "timed out");
+}
+
 async function row(id) {
   const { rows } = await pool.query("select state, sequence, title, embedding is not null as embedded, embedding_attempts from orders where id = $1", [id]);
   return rows[0];
@@ -136,6 +152,7 @@ before(async () => {
       return;
     }
     const { input } = JSON.parse(body);
+    await openaiHold;
     res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
       data: input.map((text, index) => ({ index, embedding: hashingEmbedding(text) })),
     }));
@@ -178,12 +195,20 @@ beforeEach(async () => {
   await pool.query("truncate orders, preferences");
   openaiCalls.length = 0;
   openaiFails = false;
+  openaiHold = undefined;
 });
 
 after(async () => {
   server?.close();
   openai?.close();
   await pool?.end();
+  // pool.end() returns before the server has closed its connections; dropping the database
+  // while one is closing makes that connection throw.
+  for (let i = 0; i < 100; i++) {
+    const { rows } = await admin.query("select count(*)::int as count from pg_stat_activity where datname = $1", [databaseName]);
+    if (rows[0].count === 0) break;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
   if (createdDatabase) await admin.query(`drop database "${databaseName}" with (force)`);
   await admin.end();
 });
@@ -224,6 +249,78 @@ test("an edit that changes the text is embedded again; a state change is not", a
   assert.equal((await row(created.id)).embedded, true);
   assert.equal(openaiCalls.length, 2);
   assert.match(openaiCalls[1].body.input[0], /^Iced coffee/);
+});
+
+test("a supplier that arrives after its order was embedded gets the order embedded again with the pickup", async () => {
+  const late = randomUUID();
+  const created = order({ supplierId: late });
+  await orderEvent(created, 1);
+  await job.requestEmbedding();
+  assert.ok(await embeddedText(created.id, "Bubble tea\nOne brown sugar milk tea"));
+
+  await supplier(late, { name: "LiHO", type: "Food/Coffee" });
+  await job.requestEmbedding();
+  assert.equal(openaiCalls.length, 2);
+  assert.deepEqual(openaiCalls[1].body.input, ["Bubble tea\nOne brown sugar milk tea\nPickup: LiHO (Food/Coffee)"]);
+  assert.ok(await embeddedText(created.id, openaiCalls[1].body.input[0]));
+});
+
+test("renaming a supplier, or moving an order to another supplier, embeds the order again; other changes do not", async () => {
+  const shop = randomUUID();
+  await supplier(shop, { name: "Old Name", type: "Food/Coffee" });
+  const kept = order({ supplierId: shop });
+  const moved = order({ supplierId: shop, title: "Moved order" });
+  await orderEvent(kept, 1);
+  await orderEvent(moved, 1);
+  await job.requestEmbedding();
+  const texts = () => openaiCalls.flatMap((call) => call.body.input);
+  assert.equal(texts().length, 2);
+
+  // A new location or building does not change the embedded text.
+  await supplier(shop, { name: "Old Name", type: "Food/Coffee", buildingName: "UTown", latitude: "1.304800" });
+  await job.requestEmbedding();
+  assert.equal(texts().length, 2);
+
+  const renamedVersion = version + 1;
+  await supplier(shop, { name: "New Name", type: "Printing" });
+  // An older version arriving late changes nothing.
+  const stale = await push("supplier-events", { type: "supplier.updated", eventId: randomUUID(), version: renamedVersion - 1, supplier: { id: shop, name: "Old Name", type: "Food/Coffee", buildingName: null, latitude: "1.3", longitude: "103.7" } });
+  assert.equal(stale.status, 204);
+  await job.requestEmbedding();
+  assert.deepEqual(texts().slice(2).sort(), [
+    "Bubble tea\nOne brown sugar milk tea\nPickup: New Name (Printing)",
+    "Moved order\nOne brown sugar milk tea\nPickup: New Name (Printing)",
+  ]);
+  assert.ok(await embeddedText(kept.id, "Bubble tea\nOne brown sugar milk tea\nPickup: New Name (Printing)"));
+
+  await orderEvent({ ...moved, supplierId: UTOWN_SUPPLIER }, 2, "order.edited");
+  assert.equal((await row(moved.id)).embedded, false);
+  await job.requestEmbedding();
+  assert.ok(await embeddedText(moved.id, "Moved order\nOne brown sugar milk tea\nPickup: Printing Room (Printing)"));
+  assert.ok(await embeddedText(kept.id, "Bubble tea\nOne brown sugar milk tea\nPickup: New Name (Printing)"));
+});
+
+test("an embedding that was in flight when its supplier changed is not stored; the new text is", async () => {
+  const shop = randomUUID();
+  await supplier(shop, { name: "Before", type: "Food/Coffee" });
+  const created = order({ supplierId: shop });
+  let release;
+  openaiHold = new Promise((resolve) => { release = resolve; });
+  await orderEvent(created, 1);
+  const running = job.requestEmbedding();
+  await until(() => openaiCalls.length === 1);
+  assert.deepEqual(openaiCalls[0].body.input, ["Bubble tea\nOne brown sugar milk tea\nPickup: Before (Food/Coffee)"]);
+
+  // The supplier is renamed while the old text is being embedded.
+  await supplier(shop, { name: "After", type: "Food/Coffee" });
+  openaiHold = undefined;
+  release();
+  await running;
+  await job.requestEmbedding();
+
+  assert.equal(openaiCalls.length, 2);
+  assert.deepEqual(openaiCalls[1].body.input, ["Bubble tea\nOne brown sugar milk tea\nPickup: After (Food/Coffee)"]);
+  assert.ok(await embeddedText(created.id, openaiCalls[1].body.input[0]));
 });
 
 test("an embedding outage never fails the event; retries back off, then stop", async () => {

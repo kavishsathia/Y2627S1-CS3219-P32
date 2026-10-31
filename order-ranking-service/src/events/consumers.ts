@@ -3,8 +3,10 @@
  * Scope: Applying order-events (the full order snapshot in each event) and
  * supplier-events (latest version only) to this service's local copies. Parsing
  * helpers follow order-service/src/events/consumers.ts. Author review: Pending.
+ * Claude Code (Opus 5.5), 2026-11-01. Scope: Orders are embedded again when their supplier,
+ * or the supplier's name or type, changes. Author review: Pending.
  */
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { orders, suppliers } from "../db/schema.js";
 
@@ -58,7 +60,7 @@ function coordinate(value: unknown, what: string, limit: number): number {
 
 // order-events: { eventId, type, orderId, sequence, state, order: { ...full order } }.
 // Delivery is at least once and may be out of order, so only a newer sequence applies.
-// Returns true when the order's text changed and it needs embedding.
+// Returns true when the order's text or supplier changed and it needs embedding.
 export async function applyOrderEvent(message: unknown): Promise<boolean> {
   const event = record(message, "order event");
   const sequence = positiveInteger(event.sequence, "sequence");
@@ -80,8 +82,9 @@ export async function applyOrderEvent(message: unknown): Promise<boolean> {
   };
   if (values.id !== uuid(event.orderId, "orderId")) throw new InvalidMessageError("order.id must match orderId");
 
-  // An edit that changes the text drops the old embedding so the job embeds it again.
-  const textUnchanged = sql`${orders.title} = excluded.title and ${orders.description} = excluded.description`;
+  // An edit that changes the text or the supplier drops the old embedding so the job
+  // embeds it again (the supplier's name and type are part of the embedded text).
+  const textUnchanged = sql`${orders.title} = excluded.title and ${orders.description} = excluded.description and ${orders.supplierId} = excluded.supplier_id`;
   const rows = await db.insert(orders).values(values)
     .onConflictDoUpdate({
       target: orders.id,
@@ -101,6 +104,7 @@ export async function applyOrderEvent(message: unknown): Promise<boolean> {
         embeddingAttempts: sql`case when ${textUnchanged} then ${orders.embeddingAttempts} else 0 end`,
         embeddingError: sql`case when ${textUnchanged} then ${orders.embeddingError} else null end`,
         embeddingRetryAt: sql`case when ${textUnchanged} then ${orders.embeddingRetryAt} else null end`,
+        embeddingInputVersion: sql`case when ${textUnchanged} then ${orders.embeddingInputVersion} else ${orders.embeddingInputVersion} + 1 end`,
         updatedAt: sql`now()`,
       },
       setWhere: sql`${orders.sequence} < excluded.sequence`,
@@ -109,8 +113,9 @@ export async function applyOrderEvent(message: unknown): Promise<boolean> {
   return rows.length > 0 && !rows[0]!.embedded;
 }
 
-// supplier-events: only the latest version of each supplier is kept.
-export async function applySupplierEvent(message: unknown): Promise<void> {
+// supplier-events: only the latest version of each supplier is kept. Returns true when
+// the supplier's name or type changed (or it is new), so its orders need embedding again.
+export async function applySupplierEvent(message: unknown): Promise<boolean> {
   const event = record(message, "supplier event");
   const version = positiveInteger(event.version, "version");
 
@@ -122,7 +127,7 @@ export async function applySupplierEvent(message: unknown): Promise<void> {
         set: { version, deleted: true },
         setWhere: sql`${suppliers.version} < ${version}`,
       });
-    return;
+    return false;
   }
 
   if (event.type !== "supplier.created" && event.type !== "supplier.updated") {
@@ -139,18 +144,38 @@ export async function applySupplierEvent(message: unknown): Promise<void> {
     latitude: coordinate(supplier.latitude, "supplier.latitude", 90),
     longitude: coordinate(supplier.longitude, "supplier.longitude", 180),
   };
-  await db.insert(suppliers).values(values)
-    .onConflictDoUpdate({
-      target: suppliers.id,
-      set: {
-        version,
-        deleted: false,
-        name: values.name,
-        type: values.type,
-        buildingName: values.buildingName,
-        latitude: values.latitude,
-        longitude: values.longitude,
-      },
-      setWhere: sql`${suppliers.version} < ${version}`,
-    });
+  return db.transaction(async (tx) => {
+    const [before] = await tx.select({ name: suppliers.name, type: suppliers.type })
+      .from(suppliers).where(eq(suppliers.id, values.id)).for("update");
+    const applied = await tx.insert(suppliers).values(values)
+      .onConflictDoUpdate({
+        target: suppliers.id,
+        set: {
+          version,
+          deleted: false,
+          name: values.name,
+          type: values.type,
+          buildingName: values.buildingName,
+          latitude: values.latitude,
+          longitude: values.longitude,
+        },
+        setWhere: sql`${suppliers.version} < ${version}`,
+      })
+      .returning({ id: suppliers.id });
+    if (applied.length === 0 || (before && before.name === values.name && before.type === values.type)) return false;
+
+    // Orders may have been embedded before this supplier arrived, or under its old name.
+    // Raising the version also stops an embedding of the old text that is still in flight.
+    await tx.update(orders)
+      .set({
+        embedding: null,
+        embeddingAttempts: 0,
+        embeddingError: null,
+        embeddingRetryAt: null,
+        embeddingInputVersion: sql`${orders.embeddingInputVersion} + 1`,
+        updatedAt: sql`now()`,
+      })
+      .where(eq(orders.supplierId, values.id));
+    return true;
+  });
 }
