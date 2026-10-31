@@ -4,7 +4,8 @@ sorting (FR11.1.2), cursor-paged "Load more", accepting from the list, and the n
 button. Author review: Pending.
 Claude Code (Opus 5.5), 2026-10-17. Scope: Mine tab. Author review: Pending.
 Claude Code (Opus 5.5), 2026-10-17. Scope: Live updates from notification-service. Author review: Pending.
-Claude Code (Opus 5.5), 2026-10-31. Scope: For You tab from order-ranking-service. Author review: Pending. -->
+Claude Code (Opus 5.5), 2026-10-31. Scope: For You tab from order-ranking-service. Author review: Pending.
+Claude Code (Opus 5.5), 2026-11-01. Scope: Failed actions and notifications refresh the For You list when it is shown. Author review: Pending. -->
 <script setup lang="ts">
 import type { Order, OrderPage, OrderSort } from "#shared/services/order-service/types";
 import type { Supplier } from "#shared/services/supplier-service/types";
@@ -13,6 +14,7 @@ import { statusOf, useOrderActions, useViewerId } from "../composables/useOrders
 import { ORDER_TABS } from "../order-view";
 import OrderCard from "./OrderCard.vue";
 import RankedOrderList from "../../order-ranking-service/components/RankedOrderList.vue";
+import { RANKINGS_KEY } from "../../order-ranking-service/rankings";
 
 const route = useRoute();
 const router = useRouter();
@@ -50,6 +52,11 @@ const orders = computed(() => [...(firstPage.value?.items ?? []), ...morePages.v
 
 const { busy, error: actionError, run, perform } = useOrderActions();
 
+// The For You list loads its own orders, so it is the one to refresh while it is shown.
+function refreshShown() {
+  return tab.value.ranked ? refreshNuxtData(RANKINGS_KEY) : refresh();
+}
+
 async function loadMore() {
   if (!nextCursor.value) return;
   const page = await run(
@@ -68,7 +75,7 @@ function selectTab(key: string) {
 async function onAction(orderId: string, action: Parameters<typeof perform>[1]) {
   const updated = await perform(orderId, action);
   if (updated) await navigateTo(`/orders/${orderId}`);
-  else await refresh();
+  else await refreshShown();
 }
 
 // Notifications cover the viewer's own orders (as requester or courier). Bursts of events
@@ -76,7 +83,7 @@ async function onAction(orderId: string, action: Parameters<typeof perform>[1]) 
 let pendingRefresh: ReturnType<typeof setTimeout> | undefined;
 function refreshSoon() {
   clearTimeout(pendingRefresh);
-  pendingRefresh = setTimeout(() => refresh(), 300);
+  pendingRefresh = setTimeout(() => refreshShown(), 300);
 }
 useOrderNotifications({ onEvent: refreshSoon, onConnect: refreshSoon });
 onBeforeUnmount(() => clearTimeout(pendingRefresh));

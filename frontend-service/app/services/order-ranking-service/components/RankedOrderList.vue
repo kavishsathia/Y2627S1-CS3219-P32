@@ -2,11 +2,13 @@
 Scope: The "For You" tab: open orders ranked by order-ranking-service, each with the
 reasons it was suggested, an optional browser location for distance, and the
 preferences dialog. Author review: Pending.
-Claude Code (Opus 5.5), 2026-11-01. Scope: Summary counts delivered orders. Author review: Pending. -->
+Claude Code (Opus 5.5), 2026-11-01. Scope: Summary counts delivered orders; the list is fetched under
+RANKINGS_KEY so the order board can refresh it. Author review: Pending. -->
 <script setup lang="ts">
 import type { OrderAction } from "#shared/services/order-service/types";
 import type { RankedOrderList } from "#shared/services/order-ranking-service/types";
 import OrderCard from "../../order-service/components/OrderCard.vue";
+import { RANKINGS_KEY } from "../rankings";
 import RankingPreferencesDialog from "./RankingPreferencesDialog.vue";
 
 defineProps<{ viewerId: number | undefined; busy: boolean }>();
@@ -19,7 +21,8 @@ const locationError = ref("");
 const preferencesOpen = ref(false);
 
 const query = computed(() => ({ limit: 24, ...(location.value ?? {}) }));
-const { data, pending, error, refresh } = await useFetch<RankedOrderList>("/api/order-ranking-service/rankings", { query });
+// The order board refreshes this list by its key after a failed action and on order notifications.
+const { data, pending, error, refresh } = await useFetch<RankedOrderList>("/api/order-ranking-service/rankings", { query, key: RANKINGS_KEY });
 
 function remember(on: boolean) {
   try {
