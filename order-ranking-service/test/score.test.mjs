@@ -2,6 +2,7 @@
  * AI Assistance Disclosure: Claude Code (Opus 5.5), 2026-10-31.
  * Scope: Unit tests for the explainable ranking: each part's similarity, thresholds
  * deciding which reasons are shown, and the weighted score. Author review: Pending.
+ * Claude Code (Opus 5.5), 2026-11-01. Scope: Time reasons without embeddings. Author review: Pending.
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -142,4 +143,27 @@ test("the score is the weighted average of the parts that have data", () => {
   // distance 1 (weight 0.25) and reward 1 (weight 0.05).
   assert.equal(ranked.score, 1);
   assert.deepEqual(Object.keys(ranked.parts).sort(), ["distance", "reward"]);
+});
+
+test("without embeddings, the time reason does not claim the orders are alike", () => {
+  // Unrelated coffee runs at this hour, and a printing order; nothing has been embedded yet.
+  const history = [1, 2, 3].map((n) => past(`p${n}`, "Coffee delivery", NOON, { embedding: null }));
+  const print = candidate("print", { title: "Print my thesis", supplier: { name: "Print shop", type: "Printing", buildingName: "COM2", place: null } });
+  const [ranked] = rankOrders({ candidates: [print], history, preferences: null, location: null, now: NOON }, SETTINGS);
+  // The time part still scores the hour, but only says when the courier usually takes orders.
+  assert.equal(ranked.parts.time.similarity, 1);
+  assert.deepEqual(ranked.reasons.filter((reason) => reason.part === "time").map((reason) => reason.text), ["You often take orders around 1pm"]);
+});
+
+test("the time reason says \"like this\" only when the order and a past order at this hour are similar", () => {
+  const history = [1, 2, 3].map((n) => past(`p${n}`, "Bubble tea from Gong Cha", NOON));
+  const timeReasons = (order) => rankOrders({ candidates: [order], history, preferences: null, location: null, now: NOON }, SETTINGS)[0]
+    .reasons.filter((reason) => reason.part === "time").map((reason) => reason.text);
+
+  assert.deepEqual(timeReasons(candidate("tea", { embedding: hashingEmbedding("Gong Cha bubble tea") })), ["You often take orders like this around 1pm"]);
+  assert.deepEqual(timeReasons(candidate("print", { embedding: hashingEmbedding("Print my report at the library") })), ["You often take orders around 1pm"]);
+  // Only the candidate has a vector; there is nothing to compare it with.
+  const unembedded = history.map((item) => ({ ...item, embedding: null }));
+  const [ranked] = rankOrders({ candidates: [candidate("tea", { embedding: hashingEmbedding("Gong Cha bubble tea") })], history: unembedded, preferences: null, location: null, now: NOON }, SETTINGS);
+  assert.deepEqual(ranked.reasons.filter((reason) => reason.part === "time").map((reason) => reason.text), ["You often take orders around 1pm"]);
 });

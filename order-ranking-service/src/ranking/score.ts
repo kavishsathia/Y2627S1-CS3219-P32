@@ -5,6 +5,8 @@
  * gives a similarity from 0 to 1, the score is their weighted average, and every part
  * that reaches its threshold becomes a reason shown to the courier. Pure functions,
  * so the ranking can be tested without a database. Author review: Pending.
+ * Claude Code (Opus 5.5), 2026-11-01. Scope: The time reason only says "orders like
+ * this" when both orders have embeddings that are similar. Author review: Pending.
  */
 import { cosine } from "./embeddings.js";
 
@@ -181,13 +183,15 @@ function timePart(order: CandidateOrder, history: PastOrder[], nowHour: number, 
   let weights = 0;
   let similarAndTimed = 0;
   for (const past of timed) {
-    const likeness = order.embedding && past.embedding ? Math.max(0, cosine(order.embedding, past.embedding)) : 1;
+    const compared = order.embedding && past.embedding ? Math.max(0, cosine(order.embedding, past.embedding)) : null;
+    // Without both embeddings every past order counts equally, but they are not called alike.
+    const likeness = compared ?? 1;
     // Every past order counts a little, so an order unlike any before still gets a time score.
     const weight = 0.2 + likeness;
     const fit = timeSimilarity(nowHour, hourOfDay(past.acceptedAt!, settings.timeZone));
     total += weight * fit;
     weights += weight;
-    if (likeness >= settings.thresholds.semantic && fit >= settings.thresholds.time) similarAndTimed++;
+    if (compared !== null && compared >= settings.thresholds.semantic && fit >= settings.thresholds.time) similarAndTimed++;
   }
   const similarity = total / weights;
   const reasons: Reason[] = [];
